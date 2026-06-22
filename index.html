@@ -700,12 +700,41 @@ async function saveSettings() {
   });
 }
 
+// ── Muestra error visible en pantalla ──
+function showError(msg) {
+  hideLoading();
+  let el = document.getElementById('fb-error');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fb-error';
+    el.style.cssText = `
+      position:fixed;top:1rem;left:50%;transform:translateX(-50%);
+      z-index:9999;background:#FF4D6D;color:#fff;
+      font-family:'Inter',sans-serif;font-size:0.78rem;
+      padding:0.8rem 1.2rem;border-radius:8px;
+      max-width:90vw;word-break:break-all;
+      box-shadow:0 4px 20px rgba(0,0,0,0.4);
+      cursor:pointer;`;
+    el.title = 'Toca para cerrar';
+    el.onclick = () => el.remove();
+    document.body.appendChild(el);
+  }
+  el.textContent = '⚠ ' + msg;
+}
+
 // ── Sube imagen a Firebase Storage → devuelve URL pública ──
 async function uploadImage(base64DataUrl, productId) {
   if (!base64DataUrl) return null;
-  const imgRef = stgRef(`nebula/products/${productId}.jpg`);
-  await uploadString(imgRef, base64DataUrl, 'data_url');
-  return await getDownloadURL(imgRef);
+  try {
+    showLoading('Subiendo imagen…');
+    const imgRef = stgRef(`nebula/products/${productId}.jpg`);
+    await uploadString(imgRef, base64DataUrl, 'data_url');
+    const url = await getDownloadURL(imgRef);
+    return url;
+  } catch(e) {
+    showError('Error al subir imagen: ' + (e.code || e.message));
+    throw e;
+  }
 }
 
 // ── Borra imagen de Storage ──
@@ -718,30 +747,38 @@ async function deleteImage(productId) {
 // ── Agrega producto ──
 async function addProductToFirebase(product, base64Img) {
   const id = Date.now().toString();
-  showLoading(base64Img ? 'Subiendo imagen…' : 'Guardando…');
-  let imageUrl = null;
-  if (base64Img) imageUrl = await uploadImage(base64Img, id);
-  await set(dbRef(`nebula/products/${id}`), {
-    id, name: product.name, desc: product.desc,
-    price: product.price, stock: product.stock,
-    image: imageUrl, createdAt: Date.now()
-  });
-  hideLoading();
+  try {
+    showLoading(base64Img ? 'Subiendo imagen…' : 'Guardando…');
+    let imageUrl = null;
+    if (base64Img) imageUrl = await uploadImage(base64Img, id);
+    await set(dbRef(`nebula/products/${id}`), {
+      id, name: product.name, desc: product.desc,
+      price: product.price, stock: product.stock,
+      image: imageUrl, createdAt: Date.now()
+    });
+    hideLoading();
+  } catch(e) {
+    showError('Error al guardar producto: ' + (e.code || e.message));
+  }
 }
 
 // ── Edita producto ──
 async function updateProductInFirebase(product, newBase64Img) {
-  showLoading(newBase64Img ? 'Subiendo imagen…' : 'Guardando…');
-  let imageUrl = product.image; // conserva la existente por defecto
-  if (newBase64Img && newBase64Img !== product.image) {
-    imageUrl = await uploadImage(newBase64Img, product.id);
+  try {
+    showLoading(newBase64Img ? 'Subiendo imagen…' : 'Guardando…');
+    let imageUrl = product.image;
+    if (newBase64Img && newBase64Img !== product.image) {
+      imageUrl = await uploadImage(newBase64Img, product.id);
+    }
+    await update(dbRef(`nebula/products/${product.id}`), {
+      name: product.name, desc: product.desc,
+      price: product.price, stock: product.stock,
+      image: imageUrl
+    });
+    hideLoading();
+  } catch(e) {
+    showError('Error al actualizar: ' + (e.code || e.message));
   }
-  await update(dbRef(`nebula/products/${product.id}`), {
-    name: product.name, desc: product.desc,
-    price: product.price, stock: product.stock,
-    image: imageUrl
-  });
-  hideLoading();
 }
 
 // ── Elimina producto ──
