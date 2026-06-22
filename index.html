@@ -731,3 +731,495 @@ async function updateProductInFirebase(product, newBase64Img) {
   try {
     showLoading('Guardando cambios…');
     let imageUrl = newBase64Img ? newBase64Img : product.image;
+    
+    await update(dbRef(`nebula/products/${product.id}`), {
+      name: product.name, desc: product.desc,
+      price: product.price, stock: product.stock,
+      image: imageUrl
+    });
+    hideLoading();
+  } catch(e) {
+    showError('Error al actualizar: ' + (e.code || e.message));
+  }
+}
+
+// ── Elimina producto de Realtime Database ──
+async function deleteProductFromFirebase(id) {
+  showLoading('Eliminando…');
+  await remove(dbRef(`nebula/products/${id}`));
+  hideLoading();
+}
+
+// ── INIT ──
+showLoading('Conectando…');
+listenFirebase();
+
+// ══════════════════════════════
+//  CURRENCY
+// ══════════════════════════════
+function fmt(n) {
+  return '$' + parseFloat(n).toFixed(2);
+}
+
+// ══════════════════════════════
+//  CATALOG RENDER
+// ══════════════════════════════
+function renderCatalog() {
+  const grid = document.getElementById('catalog-grid');
+  grid.innerHTML = '';
+
+  if (state.products.length === 0) {
+    grid.innerHTML = `<div class="empty-state"><div class="icon">🌌</div><p>El catálogo está vacío.<br>El administrador aún no ha agregado productos.</p></div>`;
+    return;
+  }
+
+  state.products.forEach(p => {
+    const qty = cart[p.id] || 0;
+    const selected = qty > 0;
+    const outOfStock = p.stock <= 0;
+
+    const card = document.createElement('div');
+    card.className = 'product-card' + (selected ? ' selected' : '');
+    card.dataset.id = p.id;
+
+    const imgHtml = p.image
+      ? `<img class="card-img" src="${p.image}" alt="${p.name}" loading="lazy">`
+      : `<div class="card-img-placeholder">✦</div>`;
+
+    const stockLabel = outOfStock
+      ? `<div class="card-stock out">⊘ Sin stock</div>`
+      : p.stock <= 5
+        ? `<div class="card-stock low">▲ Solo ${p.stock} disponibles</div>`
+        : `<div class="card-stock">${p.stock} disponibles</div>`;
+
+    card.innerHTML = `
+      <div class="check-badge">✓</div>
+      ${imgHtml}
+      <div class="card-body">
+        <div class="card-name">${p.name}</div>
+        <div class="card-price">${fmt(p.price)}</div>
+        ${stockLabel}
+        <div class="qty-control">
+          <button class="qty-btn" data-action="dec" data-id="${p.id}">−</button>
+          <span class="qty-display">${qty}</span>
+          <button class="qty-btn" data-action="inc" data-id="${p.id}">+</button>
+        </div>
+      </div>`;
+
+    if (!outOfStock) {
+      card.addEventListener('click', e => {
+        if (e.target.closest('.qty-btn')) return;
+        toggleCard(p.id);
+      });
+    } else {
+      card.style.opacity = '0.5';
+      card.style.cursor = 'not-allowed';
+    }
+
+    grid.appendChild(card);
+  });
+
+  // qty buttons
+  grid.querySelectorAll('.qty-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const action = btn.dataset.action;
+      const p = state.products.find(x => x.id === id);
+      if (!p) return;
+
+      if (action === 'inc') {
+        if ((cart[id] || 0) < p.stock) {
+          cart[id] = (cart[id] || 0) + 1;
+        }
+      } else {
+        cart[id] = Math.max(0, (cart[id] || 1) - 1);
+        if (cart[id] === 0) delete cart[id];
+      }
+      refreshCard(id);
+      updateCartBar();
+    });
+  });
+
+  updateCartBar();
+}
+
+function toggleCard(id) {
+  if (cart[id]) {
+    delete cart[id];
+  } else {
+    cart[id] = 1;
+  }
+  refreshCard(id);
+  updateCartBar();
+}
+
+function refreshCard(id) {
+  const card = document.querySelector(`.product-card[data-id="${id}"]`);
+  if (!card) return;
+  const qty = cart[id] || 0;
+  const selected = qty > 0;
+  card.classList.toggle('selected', selected);
+  const qtyDisplay = card.querySelector('.qty-display');
+  if (qtyDisplay) qtyDisplay.textContent = qty;
+}
+
+function updateCartBar() {
+  const bar = document.getElementById('cart-bar');
+  const ids = Object.keys(cart);
+
+  if (ids.length === 0) {
+    bar.classList.remove('visible');
+    return;
+  }
+
+  bar.classList.add('visible');
+  let total = 0, count = 0;
+  ids.forEach(id => {
+    const p = state.products.find(x => x.id === id);
+    if (p) { total += p.price * cart[id]; count += cart[id]; }
+  });
+
+  document.getElementById('cart-count-label').textContent = `${count} artículo${count !== 1 ? 's' : ''} seleccionado${count !== 1 ? 's' : ''}`;
+  document.getElementById('cart-total-label').textContent = fmt(total);
+}
+
+// ══════════════════════════════
+//  MODALS
+// ══════════════════════════════
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// AUTH
+document.getElementById('admin-btn').addEventListener('click', () => {
+  document.getElementById('auth-input').value = '';
+  document.getElementById('auth-err').style.display = 'none';
+  openModal('auth-modal');
+  setTimeout(() => document.getElementById('auth-input').focus(), 200);
+});
+
+function submitAuth() {
+  const val = document.getElementById('auth-input').value;
+  if (val === state.password) {
+    closeModal('auth-modal');
+    openAdminPanel();
+  } else {
+    document.getElementById('auth-err').style.display = 'block';
+    document.getElementById('auth-input').value = '';
+  }
+}
+
+document.getElementById('auth-submit-btn').addEventListener('click', submitAuth);
+document.getElementById('auth-input').addEventListener('keydown', e => { if (e.key === 'Enter') submitAuth(); });
+document.getElementById('auth-cancel-btn').addEventListener('click', () => closeModal('auth-modal'));
+
+// ADMIN PANEL
+function openAdminPanel() {
+  renderAdminList();
+  // fill settings
+  document.getElementById('settings-wa').value = state.wa || '';
+  document.getElementById('settings-account').value = state.account || '';
+  document.getElementById('settings-bank').value = state.bank || '';
+  document.getElementById('settings-holder').value = state.holder || '';
+  document.getElementById('settings-pass').value = '';
+  openModal('admin-modal');
+}
+
+document.getElementById('admin-close-btn').addEventListener('click', () => closeModal('admin-modal'));
+
+// Tabs
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'manage') renderAdminList();
+  });
+});
+
+// ── IMAGE UPLOAD (ADD) ──
+const uploadArea = document.getElementById('upload-area');
+const newImgInput = document.getElementById('new-img');
+uploadArea.addEventListener('click', () => newImgInput.click());
+newImgInput.addEventListener('change', () => {
+  const file = newImgInput.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    pendingNewImg = e.target.result;
+    const preview = document.getElementById('new-img-preview');
+    preview.src = pendingNewImg;
+    preview.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+});
+
+// ── ADD PRODUCT ──
+document.getElementById('add-product-btn').addEventListener('click', async () => {
+  const name  = document.getElementById('new-name').value.trim();
+  const desc  = document.getElementById('new-desc').value.trim();
+  const price = parseFloat(document.getElementById('new-price').value);
+  const stock = parseInt(document.getElementById('new-stock').value);
+
+  if (!name)                    { alert('El nombre es obligatorio'); return; }
+  if (isNaN(price) || price < 0){ alert('Ingresa un precio válido'); return; }
+  if (isNaN(stock) || stock < 0){ alert('Ingresa un stock válido');  return; }
+
+  await addProductToFirebase({ name, desc, price, stock }, pendingNewImg);
+  showToast('Producto agregado ✦');
+
+  // reset form
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-desc').value = '';
+  document.getElementById('new-price').value = '';
+  document.getElementById('new-stock').value = '';
+  document.getElementById('new-img-preview').style.display = 'none';
+  newImgInput.value = '';
+  pendingNewImg = null;
+});
+
+// ── ADMIN PRODUCT LIST ──
+function renderAdminList() {
+  const list = document.getElementById('admin-product-list');
+  if (state.products.length === 0) {
+    list.innerHTML = '<p style="color:var(--muted);font-size:0.85rem;text-align:center;padding:2rem 0">No hay productos aún</p>';
+    return;
+  }
+  list.innerHTML = state.products.map(p => `
+    <div class="admin-product-item" id="admin-item-${p.id}">
+      ${p.image
+        ? `<img src="${p.image}" alt="${p.name}" loading="lazy">`
+        : `<div class="no-img" style="width:48px;height:48px;border-radius:6px;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">✦</div>`}
+      <div class="admin-product-info">
+        <div class="admin-product-name">${p.name}</div>
+        <div class="admin-product-meta">${fmt(p.price)} · Stock: ${p.stock}</div>
+      </div>
+      <div class="admin-product-actions">
+        <button class="icon-btn" title="Editar" onclick="window._openEditModal('${p.id}')">✎</button>
+        <button class="icon-btn danger" title="Eliminar" onclick="window._deleteProduct('${p.id}')">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── EDIT PRODUCT ──
+window._openEditModal = function(id) {
+  const p = state.products.find(x => x.id === id);
+  if (!p) return;
+  pendingEditImg = null; // null = no cambió imagen
+
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-name').value = p.name;
+  document.getElementById('edit-desc').value = p.desc || '';
+  document.getElementById('edit-price').value = p.price;
+  document.getElementById('edit-stock').value = p.stock;
+
+  const preview = document.getElementById('edit-img-preview');
+  if (p.image) {
+    preview.src = p.image;
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
+  document.getElementById('edit-img').value = '';
+  openModal('edit-modal');
+};
+
+// edit image upload
+document.getElementById('edit-upload-area').addEventListener('click', () => {
+  document.getElementById('edit-img').click();
+});
+document.getElementById('edit-img').addEventListener('change', () => {
+  const file = document.getElementById('edit-img').files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    pendingEditImg = e.target.result; // nueva imagen base64
+    const preview = document.getElementById('edit-img-preview');
+    preview.src = pendingEditImg;
+    preview.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+});
+
+document.getElementById('save-edit-btn').addEventListener('click', async () => {
+  const id = document.getElementById('edit-id').value;
+  const p  = state.products.find(x => x.id === id);
+  if (!p) return;
+
+  const name  = document.getElementById('edit-name').value.trim();
+  const price = parseFloat(document.getElementById('edit-price').value);
+  const stock = parseInt(document.getElementById('edit-stock').value);
+
+  if (!name)        { alert('El nombre es obligatorio'); return; }
+  if (isNaN(price)) { alert('Precio inválido'); return; }
+  if (isNaN(stock)) { alert('Stock inválido'); return; }
+
+  const updated = {
+    ...p,
+    name,
+    desc: document.getElementById('edit-desc').value.trim(),
+    price, stock
+  };
+
+  await updateProductInFirebase(updated, pendingEditImg);
+  closeModal('edit-modal');
+  showToast('Producto actualizado ✦');
+  pendingEditImg = null;
+});
+
+document.getElementById('edit-cancel-btn').addEventListener('click', () => {
+  pendingEditImg = null;
+  closeModal('edit-modal');
+});
+
+// ── DELETE ──
+window._deleteProduct = async function(id) {
+  if (!confirm('¿Eliminar este producto del catálogo?')) return;
+  delete cart[id];
+  await deleteProductFromFirebase(id);
+  showToast('Producto eliminado');
+};
+
+// ── SETTINGS ──
+document.getElementById('save-settings-btn').addEventListener('click', async () => {
+  const wa      = document.getElementById('settings-wa').value.trim();
+  const account = document.getElementById('settings-account').value.trim();
+  const bank    = document.getElementById('settings-bank').value.trim();
+  const holder  = document.getElementById('settings-holder').value.trim();
+  const pass    = document.getElementById('settings-pass').value;
+
+  if (!wa) { alert('El número de WhatsApp es obligatorio'); return; }
+
+  state.wa = wa; state.account = account;
+  state.bank = bank; state.holder = holder;
+  if (pass) state.password = pass;
+
+  showLoading('Guardando…');
+  await saveSettings();
+  hideLoading();
+  showToast('Configuración guardada ✦');
+});
+
+// ══════════════════════════════
+//  CHECKOUT
+// ══════════════════════════════
+document.getElementById('checkout-btn').addEventListener('click', () => {
+  if (!state.wa) {
+    alert('El administrador aún no ha configurado el número de WhatsApp. Por favor intenta más tarde.');
+    return;
+  }
+  const ids = Object.keys(cart);
+  if (ids.length === 0) return;
+
+  const listEl = document.getElementById('confirm-list');
+  let total = 0;
+  listEl.innerHTML = '';
+
+  ids.forEach(id => {
+    const p = state.products.find(x => x.id === id);
+    if (!p) return;
+    const subtotal = p.price * cart[id];
+    total += subtotal;
+    const row = document.createElement('div');
+    row.className = 'confirm-item';
+    row.innerHTML = `<span>${p.name} × ${cart[id]}</span><span>${fmt(subtotal)}</span>`;
+    listEl.appendChild(row);
+  });
+
+  document.getElementById('confirm-total').textContent = `Total: ${fmt(total)}`;
+
+  // payment info
+  const payBox = document.getElementById('payment-info');
+  if (state.account) {
+    payBox.innerHTML = `
+      <strong>💳 Datos de pago:</strong><br>
+      Banco: ${state.bank || '—'}<br>
+      Titular: ${state.holder || '—'}<br>
+      Cuenta: <strong>${state.account}</strong><br><br>
+      <em>Realiza tu transferencia y envía el comprobante por WhatsApp.</em>
+    `;
+    payBox.style.display = 'block';
+  } else {
+    payBox.style.display = 'none';
+  }
+
+  openModal('confirm-modal');
+});
+
+document.getElementById('confirm-cancel-btn').addEventListener('click', () => closeModal('confirm-modal'));
+
+document.getElementById('confirm-order-btn').addEventListener('click', () => {
+  const ids = Object.keys(cart);
+  let total = 0;
+  let lines = ['🛸 *NUEVO PEDIDO — NEBULA*\n'];
+
+  ids.forEach(id => {
+    const p = state.products.find(x => x.id === id);
+    if (!p) return;
+    const subtotal = p.price * cart[id];
+    total += subtotal;
+    lines.push(`• ${p.name} × ${cart[id]} = ${fmt(subtotal)}`);
+  });
+
+  lines.push(`\n💫 *Total: ${fmt(total)}*`);
+
+  if (state.account) {
+    lines.push(`\n💳 *Datos para pago:*`);
+    if (state.bank) lines.push(`Banco: ${state.bank}`);
+    if (state.holder) lines.push(`Titular: ${state.holder}`);
+    lines.push(`Cuenta: ${state.account}`);
+    lines.push(`\n📎 Por favor envía el comprobante de pago.`);
+  }
+
+  const msg = encodeURIComponent(lines.join('\n'));
+  const waUrl = `https://wa.me/${state.wa}?text=${msg}`;
+
+  // reset cart
+  cart = {};
+  closeModal('confirm-modal');
+  renderCatalog();
+  showToast('¡Pedido enviado! Redirigiendo a WhatsApp…');
+
+  setTimeout(() => {
+    window.open(waUrl, '_blank');
+  }, 800);
+});
+
+// ══════════════════════════════
+//  TOAST
+// ══════════════════════════════
+let toastTimeout;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ══════════════════════════════
+//  CLOSE MODALS ON BACKDROP
+// ══════════════════════════════
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) {
+      const id = overlay.id;
+      if (id === 'auth-modal' || id === 'confirm-modal' || id === 'edit-modal') {
+        overlay.classList.remove('open');
+      }
+    }
+  });
+});
+
+// ══════════════════════════════
+//  INIT
+// ══════════════════════════════
+</script>
+</body>
+</html>
